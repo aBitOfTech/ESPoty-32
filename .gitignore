@@ -1,0 +1,9 @@
+.pio/
+.venv/
+.platformio-python/
+.vscode/
+__pycache__/
+include/secrets.h
+*.bin
+*.elf
+
