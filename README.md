@@ -1,69 +1,72 @@
-# Spotify Cover para ESP32-S3 Touch LCD 1.28
+# Spotify Cover for ESP32-S3 Touch LCD 1.28
 
-Reproductor de Spotify para la pantalla redonda GC9A01 de 240x240: muestra la portada a pantalla completa, el título y el artista de la canción que suena, un anillo de progreso en el borde y tres botones táctiles para controlar la reproducción. Está preparado para **Waveshare ESP32-S3-Touch-LCD-1.28** (CST816S + GC9A01); no requiere cableado externo.
+**English** | [Español](README.es.md)
 
-## Funciones
+Spotify player for the round 240x240 GC9A01 display: it shows the album cover full screen, the title and artist of the current track, a progress ring along the edge and three touch buttons to control playback. It targets the **Waveshare ESP32-S3-Touch-LCD-1.28** (CST816S + GC9A01); no external wiring is needed.
 
-- Portada del álbum recortada al centro y escalada a 240x240, con un degradado oscuro en la parte inferior para que el texto sea legible.
-- Título en grande (con desplazamiento horizontal si no cabe) y artista debajo.
-- Anillo de progreso alrededor del borde que avanza en tiempo real entre consultas.
-- Botones de estilo "cristal" para anterior, reproducir/pausar y siguiente.
-- Pantallas de estado: `Conectando WiFi`, `Falta Spotify` (no hay credenciales o el token no es válido) y `Nada reproduciéndose`.
+## Features
 
-## Requisitos
+- Album cover center-cropped and scaled to 240x240, with a dark gradient at the bottom so the text stays readable.
+- Large title (scrolling horizontally when it doesn't fit) with the artist below.
+- Progress ring around the edge that advances in real time between polls.
+- "Glass" style buttons for previous, play/pause and next.
+- Status screens: `Conectando WiFi` (connecting to Wi-Fi), `Falta Spotify` (missing credentials or invalid token) and `Nada reproduciéndose` (nothing playing).
+
+## Requirements
 
 - PlatformIO
-- ESP32-S3 con PSRAM (la Waveshare ESP32-S3-Touch-LCD-1.28 trae 16 MB de flash y PSRAM)
-- Python 3 (solo librería estándar) para obtener el refresh token
-- Una app creada en [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
-- Cuenta Spotify Premium para los controles de reproducción (la API de Spotify los rechaza en cuentas gratuitas)
-- Cable USB-C de datos para alimentar y subir el firmware
+- ESP32-S3 with PSRAM (the Waveshare ESP32-S3-Touch-LCD-1.28 has 16 MB flash and PSRAM)
+- Python 3 (standard library only) to obtain the refresh token
+- An app created in the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard)
+- Spotify Premium account for the playback controls (the Spotify API rejects them on free accounts)
+- USB-C data cable to power the board and upload the firmware
 
-## Configuración
+## Setup
 
-1. En Spotify Dashboard añade como Redirect URI `http://127.0.0.1:8888/callback`.
-2. Obtén el refresh token:
+1. In the Spotify Dashboard, add `http://127.0.0.1:8888/callback` as a Redirect URI.
+2. Get the refresh token:
 
 ```sh
 python tools/get_refresh_token.py CLIENT_ID CLIENT_SECRET
 ```
 
-   El script abre el navegador, espera la autorización en `127.0.0.1:8888` e imprime la línea `#define SPOTIFY_REFRESH_TOKEN "..."` lista para pegar.
+   The script opens the browser, waits for the authorization on `127.0.0.1:8888` and prints a `#define SPOTIFY_REFRESH_TOKEN "..."` line ready to paste.
 
-3. Copia `include/secrets.example.h` a `include/secrets.h` y completa Wi-Fi, credenciales y el token impreso. `secrets.h` está en `.gitignore`.
-4. Conecta la placa y ejecuta:
+3. Copy `include/secrets.example.h` to `include/secrets.h` and fill in Wi-Fi, credentials and the printed token. `secrets.h` is listed in `.gitignore`.
+4. Connect the board and run:
 
 ```sh
 pio run -t upload
 ```
 
-Si la carga automática no entra en modo programación: mantén pulsado **BOOT**, pulsa y suelta **RESET**, suelta **BOOT** y vuelve a ejecutar `pio run -t upload`. **RESET** solo reinicia la placa.
+If the automatic upload doesn't enter programming mode: hold **BOOT**, press and release **RESET**, release **BOOT** and run `pio run -t upload` again. **RESET** alone only restarts the board.
 
-El refresh token se obtiene una vez mediante OAuth Authorization Code con los permisos `user-read-currently-playing`, `user-read-playback-state` y `user-modify-playback-state`. El access token no se guarda en flash: se renueva en RAM al arrancar y cuando Spotify responde 401.
+The refresh token is obtained once through the OAuth Authorization Code flow with the `user-read-currently-playing`, `user-read-playback-state` and `user-modify-playback-state` scopes. The access token is never stored in flash: it is renewed in RAM at boot and whenever Spotify answers 401.
 
-Si los botones muestran `Sin permiso: renueva el token`, el refresh token se generó sin `user-modify-playback-state` (por ejemplo, con una versión anterior del script): vuelve a ejecutar el paso 2 y actualiza `secrets.h`.
+If the buttons show `Sin permiso: renueva el token` (no permission: renew the token), the refresh token was generated without `user-modify-playback-state` (for example, with an older version of the script): run step 2 again and update `secrets.h`.
 
-## Uso
+## Usage
 
-- La franja inferior tiene tres zonas táctiles: anterior, reproducir/pausar y siguiente. Las zonas son más anchas que los botones dibujados.
-- Tocar en cualquier punto por encima de los botones también alterna reproducir/pausar.
-- Reproducir/pausar se refleja al instante en pantalla; si Spotify rechaza la orden, el estado se revierte y el error aparece en naranja en lugar del artista.
+- The bottom strip has three touch zones: previous, play/pause and next. The zones are wider than the drawn buttons.
+- Tapping anywhere above the buttons also toggles play/pause.
+- Play/pause is reflected on screen immediately; if Spotify rejects the command, the state is reverted and the error is shown in orange in place of the artist.
 
-## Cómo funciona
+## How it works
 
-- El estado del reproductor (`GET /v1/me/player`) se consulta cada 3 segundos y justo después de cada orden de anterior/siguiente.
-- La red (Wi-Fi, HTTPS y decodificación JPEG) corre en una tarea en el núcleo 0; el táctil y el dibujado, en el `loop()` del núcleo 1, así que la interfaz no se congela durante las peticiones.
-- Las conexiones TLS a la API y al CDN de portadas se mantienen abiertas (keep-alive) para evitar un handshake de ~1 s por petición.
-- De las imágenes que ofrece Spotify se descarga la más pequeña que cubre los 240 px, y se decodifica en un búfer doble en PSRAM.
-- Todo se compone en un sprite en PSRAM y se envía de una vez a la pantalla; el título se redibuja a ~30 fps solo cuando se desplaza y el anillo unas 4 veces por segundo.
+- The player state (`GET /v1/me/player`) is polled every 3 seconds and right after each previous/next command.
+- Networking (Wi-Fi, HTTPS and JPEG decoding) runs in a task on core 0; touch and drawing run in `loop()` on core 1, so the UI never freezes during requests.
+- TLS connections to the API and to the cover CDN are kept alive to avoid a ~1 s handshake per request.
+- Of the images Spotify offers, the smallest one that still covers 240 px is downloaded, and it is decoded into a double buffer in PSRAM.
+- Everything is composed in a PSRAM sprite and pushed to the display in one go; the title is redrawn at ~30 fps only while it scrolls, and the ring about 4 times per second.
 
-## Pines
+## Pins
 
-Los pines están en `include/pins.h`; es el único archivo que hay que cambiar para otra placa ESP32-S3 + GC9A01/CST816S. Son las conexiones internas entre el ESP32-S3 y la pantalla/touch: SPI SCLK/MOSI/MISO/CS/DC/RST/BL = 10/11/12/9/8/14/2; I²C SDA/SCL y touch RST/IRQ = 6/7/13/5 (dirección I²C del CST816S: `0x15`). No tienes que conectarlos manualmente. El USB-C integrado usa el conversor USB-serie de la placa para cargar el firmware.
+The pins live in `include/pins.h`, the only file to change for another ESP32-S3 + GC9A01/CST816S board. They are the internal connections between the ESP32-S3 and the display/touch controller: SPI SCLK/MOSI/MISO/CS/DC/RST/BL = 10/11/12/9/8/14/2; I²C SDA/SCL and touch RST/IRQ = 6/7/13/5 (CST816S I²C address: `0x15`). You don't need to wire them yourself. The onboard USB-C uses the board's USB-serial converter to upload the firmware.
 
-## Limitaciones conocidas
+## Known limitations
 
-- Las fuentes incluidas solo tienen ASCII: los acentos latinos se muestran sin tilde (`é` → `e`) y se omiten emojis y otros símbolos.
-- La conexión HTTPS usa `setInsecure()` para evitar cargar un bundle de CA en flash; para un dispositivo expuesto a redes no confiables conviene añadir validación de certificado.
-- La portada está limitada a 300 KB para no agotar la PSRAM; si la descarga o la decodificación fallan se muestra un fondo oscuro.
-- Solo se muestra el primer artista de cada canción.
+- The bundled fonts are ASCII-only: Latin accents are shown without diacritics (`é` → `e`), and emoji and other symbols are skipped.
+- HTTPS uses `setInsecure()` to avoid storing a CA bundle in flash; for a device exposed to untrusted networks, certificate validation should be added.
+- The cover is limited to 300 KB to avoid exhausting PSRAM; if the download or decoding fails, a dark background is shown.
+- Only the first artist of each track is shown.
+- On-screen messages are in Spanish.
