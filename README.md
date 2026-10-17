@@ -59,8 +59,33 @@ If the buttons show `Sin permiso: renueva el token` (no permission: renew the to
 - Networking (Wi-Fi, HTTPS and JPEG decoding) runs in a task on core 0; touch and drawing run in `loop()` on core 1, so the UI never freezes during requests.
 - TLS connections to the API and to the cover CDN are kept alive to avoid a ~1 s handshake per request.
 - Of the images Spotify offers, the smallest one that still covers 240 px is downloaded, and it is decoded into a double buffer in PSRAM.
-- The accelerometer is read about 30 times per second; the gravity vector is filtered and the sprite is pushed rotated (`pushRotateZoomWithAA`) only when the angle changes by more than 1°. If the UI turns the wrong way or settles tilted, adjust `IMU_ANGLE_SIGN` / `IMU_ANGLE_OFFSET` in `src/main.cpp`.
+- The accelerometer is read about 30 times per second; the gravity vector is filtered and the sprite is pushed rotated (`pushRotateZoomWithAA`) only when the angle changes by more than 1°. If the UI turns the wrong way or settles tilted, adjust `IMU_ANGLE_SIGN` / `IMU_ANGLE_OFFSET` in `src/app_config.h`.
 - Everything is composed in a PSRAM sprite and pushed to the display in one go; the title is redrawn at ~30 fps only while it scrolls, and the ring about 4 times per second.
+
+## Project structure
+
+| Path | Contents |
+|---|---|
+| `src/main.cpp` | `setup()` and the render loop (core 1): touch, rotation and redraw scheduling |
+| `src/network_task.*` | Network task (core 0): Wi-Fi, polling, commands and cover swaps |
+| `src/spotify_client.*` | Spotify Web API: token refresh, player state, playback commands |
+| `src/cover_loader.*` | Cover download, JPEG decoding and center-crop to 240x240 |
+| `src/renderer.*`, `src/display.h` | Drawing: cover, gradient, title, glass buttons, progress ring, rotation |
+| `src/player_store.*` | State shared between both cores (only accessible under its lock) and the command queue |
+| `src/touch.*`, `src/orientation.*`, `src/i2c_bus.*` | CST816S touch, QMI8658 accelerometer and their shared I²C bus |
+| `src/app_config.h`, `src/theme.h` | Timings, limits and calibration; colors and on-screen texts |
+| `lib/core/` | Hardware-independent logic (color math, blur, text folding, layout, playback), covered by the tests |
+| `test/test_core/` | Unit tests for `lib/core` |
+
+### Tests
+
+The `lib/core` logic is tested on the PC with Unity:
+
+```sh
+pio test -e native
+```
+
+This needs a host C++ compiler (gcc, e.g. MinGW-w64 on Windows) in `PATH`. `pio run` and `pio run -t upload` only build the firmware.
 
 ## Pins
 

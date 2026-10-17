@@ -59,8 +59,33 @@ Si los botones muestran `Sin permiso: renueva el token`, el refresh token se gen
 - La red (Wi-Fi, HTTPS y decodificación JPEG) corre en una tarea en el núcleo 0; el táctil y el dibujado, en el `loop()` del núcleo 1, así que la interfaz no se congela durante las peticiones.
 - Las conexiones TLS a la API y al CDN de portadas se mantienen abiertas (keep-alive) para evitar un handshake de ~1 s por petición.
 - De las imágenes que ofrece Spotify se descarga la más pequeña que cubre los 240 px, y se decodifica en un búfer doble en PSRAM.
-- El acelerómetro se lee unas 30 veces por segundo; el vector de gravedad se filtra y el sprite se envía girado (`pushRotateZoomWithAA`) solo cuando el ángulo cambia más de 1°. Si la interfaz gira al revés o queda inclinada, ajusta `IMU_ANGLE_SIGN` / `IMU_ANGLE_OFFSET` en `src/main.cpp`.
+- El acelerómetro se lee unas 30 veces por segundo; el vector de gravedad se filtra y el sprite se envía girado (`pushRotateZoomWithAA`) solo cuando el ángulo cambia más de 1°. Si la interfaz gira al revés o queda inclinada, ajusta `IMU_ANGLE_SIGN` / `IMU_ANGLE_OFFSET` en `src/app_config.h`.
 - Todo se compone en un sprite en PSRAM y se envía de una vez a la pantalla; el título se redibuja a ~30 fps solo cuando se desplaza y el anillo unas 4 veces por segundo.
+
+## Estructura del proyecto
+
+| Ruta | Contenido |
+|---|---|
+| `src/main.cpp` | `setup()` y el bucle de dibujado (núcleo 1): táctil, rotación y cuándo redibujar |
+| `src/network_task.*` | Tarea de red (núcleo 0): Wi-Fi, consultas, órdenes y cambio de portada |
+| `src/spotify_client.*` | Web API de Spotify: renovación del token, estado del reproductor, órdenes |
+| `src/cover_loader.*` | Descarga de portadas, decodificación JPEG y recorte a 240x240 |
+| `src/renderer.*`, `src/display.h` | Dibujado: portada, degradado, título, botones de cristal, anillo de progreso, rotación |
+| `src/player_store.*` | Estado compartido entre los dos núcleos (solo accesible con su candado) y la cola de órdenes |
+| `src/touch.*`, `src/orientation.*`, `src/i2c_bus.*` | Táctil CST816S, acelerómetro QMI8658 y el bus I²C que comparten |
+| `src/app_config.h`, `src/theme.h` | Tiempos, límites y calibración; colores y textos en pantalla |
+| `lib/core/` | Lógica independiente del hardware (colores, desenfoque, acentos, geometría, progreso), cubierta por los tests |
+| `test/test_core/` | Tests unitarios de `lib/core` |
+
+### Tests
+
+La lógica de `lib/core` se prueba en el PC con Unity:
+
+```sh
+pio test -e native
+```
+
+Hace falta un compilador de C++ para PC (gcc, por ejemplo MinGW-w64 en Windows) en el `PATH`. `pio run` y `pio run -t upload` solo compilan el firmware.
 
 ## Pines
 
