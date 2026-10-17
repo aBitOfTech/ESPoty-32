@@ -15,5 +15,6 @@ constexpr int TOUCH_SCL = 7;
 constexpr int TOUCH_RST = 13;
 constexpr int TOUCH_IRQ = 5;
 constexpr uint8_t TOUCH_ADDR = 0x15;
+constexpr uint8_t IMU_ADDR = 0x6B;  // QMI8658, on the touch I2C bus
 }
 

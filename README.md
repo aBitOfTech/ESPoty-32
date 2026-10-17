@@ -10,6 +10,7 @@ Spotify player for the round 240x240 GC9A01 display: it shows the album cover fu
 - Large title (scrolling horizontally when it doesn't fit) with the artist below.
 - Progress ring around the edge that advances in real time between polls.
 - "Glass" style buttons for previous, play/pause and next.
+- The interface rotates to any angle following the board's position (QMI8658 accelerometer), so it always stays upright.
 - Status screens: `Conectando WiFi` (connecting to Wi-Fi), `Falta Spotify` (missing credentials or invalid token) and `Nada reproduciéndose` (nothing playing).
 
 ## Requirements
@@ -49,6 +50,7 @@ If the buttons show `Sin permiso: renueva el token` (no permission: renew the to
 
 - The bottom strip has three touch zones: previous, play/pause and next. The zones are wider than the drawn buttons.
 - Tapping anywhere above the buttons also toggles play/pause.
+- Turn the board and the interface turns with it to stay upright; the touch zones follow the rotation. Lying flat (within ~30° of horizontal), it keeps the last orientation.
 - Play/pause is reflected on screen immediately; if Spotify rejects the command, the state is reverted and the error is shown in orange in place of the artist.
 
 ## How it works
@@ -57,16 +59,16 @@ If the buttons show `Sin permiso: renueva el token` (no permission: renew the to
 - Networking (Wi-Fi, HTTPS and JPEG decoding) runs in a task on core 0; touch and drawing run in `loop()` on core 1, so the UI never freezes during requests.
 - TLS connections to the API and to the cover CDN are kept alive to avoid a ~1 s handshake per request.
 - Of the images Spotify offers, the smallest one that still covers 240 px is downloaded, and it is decoded into a double buffer in PSRAM.
+- The accelerometer is read about 30 times per second; the gravity vector is filtered and the sprite is pushed rotated (`pushRotateZoomWithAA`) only when the angle changes by more than 1°. If the UI turns the wrong way or settles tilted, adjust `IMU_ANGLE_SIGN` / `IMU_ANGLE_OFFSET` in `src/main.cpp`.
 - Everything is composed in a PSRAM sprite and pushed to the display in one go; the title is redrawn at ~30 fps only while it scrolls, and the ring about 4 times per second.
 
 ## Pins
 
-The pins live in `include/pins.h`, the only file to change for another ESP32-S3 + GC9A01/CST816S board. They are the internal connections between the ESP32-S3 and the display/touch controller: SPI SCLK/MOSI/MISO/CS/DC/RST/BL = 10/11/12/9/8/14/2; I²C SDA/SCL and touch RST/IRQ = 6/7/13/5 (CST816S I²C address: `0x15`). You don't need to wire them yourself. The onboard USB-C uses the board's USB-serial converter to upload the firmware.
+The pins live in `include/pins.h`, the only file to change for another ESP32-S3 + GC9A01/CST816S board. They are the internal connections between the ESP32-S3 and the display/touch controller: SPI SCLK/MOSI/MISO/CS/DC/RST/BL = 10/11/12/9/8/14/2; I²C SDA/SCL and touch RST/IRQ = 6/7/13/5 (I²C addresses: CST816S `0x15`, QMI8658 accelerometer `0x6B` on the same bus). You don't need to wire them yourself. The onboard USB-C uses the board's USB-serial converter to upload the firmware.
 
 ## Known limitations
 
 - The bundled fonts are ASCII-only: Latin accents are shown without diacritics (`é` → `e`), and emoji and other symbols are skipped.
 - HTTPS uses `setInsecure()` to avoid storing a CA bundle in flash; for a device exposed to untrusted networks, certificate validation should be added.
 - The cover is limited to 300 KB to avoid exhausting PSRAM; if the download or decoding fails, a dark background is shown.
-- Only the first artist of each track is shown.
-- On-screen messages are in Spanish.
+- Only the first artist of each track is shown.- On-screen messages are in Spanish.

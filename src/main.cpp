@@ -92,7 +92,14 @@ constexpr float RING_MID = (RING_INNER + RING_OUTER) / 2;
 constexpr unsigned long PROGRESS_REDRAW_MS = 250;
 constexpr unsigned long FRAME_MS = 33;
 constexpr unsigned long POLL_MS = 3000;
-// The glass blur runs at half resolution over the button row plus a margin.
+// Gravity-based rotation: the UI turns to stay upright while the board is held up, and keeps its
+// last angle when the board lies within ~30 degrees of flat (gravity then says nothing about "up").
+// If the UI turns the wrong way, negate IMU_ANGLE_SIGN; if it settles tilted, adjust IMU_ANGLE_OFFSET.
+constexpr float IMU_ANGLE_SIGN = -1.0f;
+constexpr float IMU_ANGLE_OFFSET = -90.0f;
+constexpr float IMU_FLAT_RATIO = 0.5f;   // sin(30 deg)
+constexpr float IMU_SMOOTHING = 0.3f;    // low-pass weight of each new sample
+constexpr float IMU_DEADBAND_DEG = 1.0f; // ignore smaller changes so a still board doesn't redraw// The glass blur runs at half resolution over the button row plus a margin.
 constexpr int BLUR_MARGIN = 8;
 constexpr int BLUR_X = BUTTONS[0].x - BUTTONS[0].r - BLUR_MARGIN;
 constexpr int BLUR_Y = BUTTONS[1].y - BUTTONS[1].r - BLUR_MARGIN;
@@ -159,7 +166,8 @@ struct RingPixel {
   uint8_t coverage;
 };
 std::vector<RingPixel> ring;
-
+bool imuReady = false;
+float uiAngle = 0;  // degrees clockwise the UI is rotated on the panel
 template <typename T>
 T *psramAlloc(size_t count) {
   void *p = heap_caps_malloc(count * sizeof(T), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -413,6 +421,12 @@ void drawTitle(int offset) {
   }
 }
 
+// Pushes the canvas rotated around the center. The rotated square always covers the round panel.
+void present() {
+  if (uiAngle == 0) canvas.pushSprite(0, 0);
+  else canvas.pushRotateZoomWithAA(&lcd, uiAngle, 1.0f, 1.0f);
+}
+
 void drawStatus() {
   drawVignette();
   canvas.setTextDatum(middle_center);
@@ -424,14 +438,14 @@ void drawStatus() {
     canvas.setTextColor(0xC618);
     canvas.drawString(fitText(asciiFold(view.statusDetail), 200), CENTER, 136);
   }
-  canvas.pushSprite(0, 0);
+  present();
 }
 
 void drawFrame(float progress, int titleOffset) {
   memcpy(frame, under, SCREEN * SCREEN * sizeof(uint16_t));
   drawRing(progress);
   drawTitle(titleOffset);
-  canvas.pushSprite(0, 0);
+  present();
 }
 
 // Precomputes the gradient and the ring pixels once.
@@ -455,7 +469,22 @@ void buildGeometry() {
   }
 }
 
-// ---------------------------------------------------------------- touch
+// ---------------------------------------------------------------- touch and motion
+
+bool i2cWrite(uint8_t addr, uint8_t reg, uint8_t value) {
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  Wire.write(value);
+  return Wire.endTransmission() == 0;
+}
+
+bool i2cRead(uint8_t addr, uint8_t reg, uint8_t *buffer, size_t count) {
+  Wire.beginTransmission(addr);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0 || Wire.requestFrom(addr, count) != count) return false;
+  for (size_t i = 0; i < count; ++i) buffer[i] = Wire.read();
+  return true;
+}
 
 // CST816S auto-sleeps and NACKs I2C when idle; only read it after its IRQ fires.
 volatile bool touchIrq = false;
@@ -466,20 +495,56 @@ bool readTap(uint16_t &x, uint16_t &y) {
   static bool fingerDown = false;
   if (!touchIrq) return false;
   touchIrq = false;
-  Wire.beginTransmission(pins::TOUCH_ADDR);
-  Wire.write(0x02);  // finger count; coordinates follow at 0x03..0x06
-  if (Wire.endTransmission(false) != 0 || Wire.requestFrom(pins::TOUCH_ADDR, 5) != 5) return false;
-  const bool down = Wire.read() > 0;
-  const uint8_t xHigh = Wire.read();
-  const uint8_t xLow = Wire.read();
-  const uint8_t yHigh = Wire.read();
-  const uint8_t yLow = Wire.read();
+  uint8_t data[5];  // finger count, then X high/low and Y high/low
+  if (!i2cRead(pins::TOUCH_ADDR, 0x02, data, sizeof(data))) return false;
+  const bool down = data[0] > 0;
   const bool tap = down && !fingerDown;
   fingerDown = down;
   if (!tap) return false;
-  x = ((xHigh & 0x0F) << 8) | xLow;
-  y = ((yHigh & 0x0F) << 8) | yLow;
+  x = ((data[1] & 0x0F) << 8) | data[2];
+  y = ((data[3] & 0x0F) << 8) | data[4];
   return x < SCREEN && y < SCREEN;
+}
+
+void initImu() {
+  uint8_t id = 0;
+  if (!i2cRead(pins::IMU_ADDR, 0x00, &id, 1) || id != 0x05) return;  // WHO_AM_I
+  imuReady = i2cWrite(pins::IMU_ADDR, 0x02, 0x40) &&  // CTRL1: register auto-increment, little endian
+             i2cWrite(pins::IMU_ADDR, 0x03, 0x06) &&  // CTRL2: accelerometer +-2 g, 125 Hz
+             i2cWrite(pins::IMU_ADDR, 0x08, 0x01);    // CTRL7: enable the accelerometer only
+}
+
+// Samples gravity once per frame and returns true when uiAngle moved enough to redraw.
+bool updateAngle(unsigned long now) {
+  static unsigned long lastSample = 0;
+  static bool seeded = false;
+  static float gx = 0, gy = 0;
+  if (!imuReady || now - lastSample < FRAME_MS) return false;
+  lastSample = now;
+  uint8_t data[6];
+  if (!i2cRead(pins::IMU_ADDR, 0x35, data, sizeof(data))) return false;  // AX_L .. AZ_H
+  const float ax = static_cast<int16_t>(data[0] | data[1] << 8);
+  const float ay = static_cast<int16_t>(data[2] | data[3] << 8);
+  const float az = static_cast<int16_t>(data[4] | data[5] << 8);
+  if (hypotf(ax, ay) < IMU_FLAT_RATIO * sqrtf(ax * ax + ay * ay + az * az)) return false;
+  // Filter the vector, not the angle, so there is no jump when it wraps around 180 degrees.
+  gx = seeded ? gx + (ax - gx) * IMU_SMOOTHING : ax;
+  gy = seeded ? gy + (ay - gy) * IMU_SMOOTHING : ay;
+  seeded = true;
+  const float target = IMU_ANGLE_SIGN * atan2f(gx, gy) * RAD_TO_DEG + IMU_ANGLE_OFFSET;
+  const float delta = remainderf(target - uiAngle, 360.0f);
+  if (fabsf(delta) < IMU_DEADBAND_DEG) return false;
+  uiAngle = remainderf(uiAngle + delta, 360.0f);
+  return true;
+}
+
+// Panel coordinates -> UI coordinates: undo the rotation applied by present().
+void unrotate(int &x, int &y) {
+  const float a = uiAngle * DEG_TO_RAD;
+  const float dx = x + 0.5f - CENTER;
+  const float dy = y + 0.5f - CENTER;
+  x = static_cast<int>(floorf(CENTER + cosf(a) * dx + sinf(a) * dy));
+  y = static_cast<int>(floorf(CENTER - sinf(a) * dx + cosf(a) * dy));
 }
 
 // 0 = previous, 1 = play/pause, 2 = next. The touch zones are wider than the drawn buttons;
@@ -496,6 +561,7 @@ uint32_t positionMs(const PlayerState &s, unsigned long now) {
 
 void handleTap(int x, int y) {
   if (!view.trackId.length()) return;
+  unrotate(x, y);
   const int button = buttonAt(x, y);
   pressedButton = button;
   pressedUntil = millis() + 180;
@@ -796,13 +862,9 @@ void setup() {
   pinMode(pins::TOUCH_IRQ, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(pins::TOUCH_IRQ), onTouchIrq, FALLING);
   // Factory IrqCtl only fires on gestures; enable IRQ on touch/release and keep the chip awake.
-  const uint8_t touchConfig[][2] = {{0xFA, 0x60}, {0xFE, 0x01}};  // IrqCtl=EnTouch|EnChange, DisAutoSleep
-  for (const auto &reg : touchConfig) {
-    Wire.beginTransmission(pins::TOUCH_ADDR);
-    Wire.write(reg[0]);
-    Wire.write(reg[1]);
-    Wire.endTransmission();
-  }
+  i2cWrite(pins::TOUCH_ADDR, 0xFA, 0x60);  // IrqCtl = EnTouch | EnChange
+  i2cWrite(pins::TOUCH_ADDR, 0xFE, 0x01);  // DisAutoSleep
+  initImu();
   lcd.init();
   lcd.setRotation(0);
   canvas.setColorDepth(16);
@@ -829,6 +891,7 @@ void loop() {
   static bool lastPressed = false;
   static bool lastPlaying = false;
   const unsigned long now = millis();
+  const bool turned = updateAngle(now);
   bool changed = false;
 
   xSemaphoreTake(stateLock, portMAX_DELAY);
@@ -846,7 +909,7 @@ void loop() {
   xSemaphoreGive(stateLock);
 
   if (!view.trackId.length()) {
-    if (changed) drawStatus();
+    if (changed || turned) drawStatus();
     delay(10);
     return;
   }
@@ -860,10 +923,10 @@ void loop() {
     buildUnder();
   }
 
-  // Redraw for a scrolling title (every frame) or the progress ring (a few times per second).
+  // Redraw for a rotation or a scrolling title (every frame) or the progress ring (a few times per second).
   const bool scrolling = titleWidth > TITLE_W;
   const unsigned long interval = scrolling ? FRAME_MS : view.playing ? PROGRESS_REDRAW_MS : ULONG_MAX;
-  if (!changed && now - lastFrame < interval) {
+  if (!changed && !turned && now - lastFrame < interval) {
     delay(5);
     return;
   }

@@ -10,6 +10,7 @@ Reproductor de Spotify para la pantalla redonda GC9A01 de 240x240: muestra la po
 - Título en grande (con desplazamiento horizontal si no cabe) y artista debajo.
 - Anillo de progreso alrededor del borde que avanza en tiempo real entre consultas.
 - Botones de estilo "cristal" para anterior, reproducir/pausar y siguiente.
+- La interfaz gira a cualquier ángulo según la posición de la placa (acelerómetro QMI8658), así que siempre queda derecha.
 - Pantallas de estado: `Conectando WiFi`, `Falta Spotify` (no hay credenciales o el token no es válido) y `Nada reproduciéndose`.
 
 ## Requisitos
@@ -49,6 +50,7 @@ Si los botones muestran `Sin permiso: renueva el token`, el refresh token se gen
 
 - La franja inferior tiene tres zonas táctiles: anterior, reproducir/pausar y siguiente. Las zonas son más anchas que los botones dibujados.
 - Tocar en cualquier punto por encima de los botones también alterna reproducir/pausar.
+- Gira la placa y la interfaz gira con ella para quedar derecha; las zonas táctiles siguen la rotación. Tumbada (a menos de ~30° de la horizontal) mantiene la última orientación.
 - Reproducir/pausar se refleja al instante en pantalla; si Spotify rechaza la orden, el estado se revierte y el error aparece en naranja en lugar del artista.
 
 ## Cómo funciona
@@ -57,11 +59,12 @@ Si los botones muestran `Sin permiso: renueva el token`, el refresh token se gen
 - La red (Wi-Fi, HTTPS y decodificación JPEG) corre en una tarea en el núcleo 0; el táctil y el dibujado, en el `loop()` del núcleo 1, así que la interfaz no se congela durante las peticiones.
 - Las conexiones TLS a la API y al CDN de portadas se mantienen abiertas (keep-alive) para evitar un handshake de ~1 s por petición.
 - De las imágenes que ofrece Spotify se descarga la más pequeña que cubre los 240 px, y se decodifica en un búfer doble en PSRAM.
+- El acelerómetro se lee unas 30 veces por segundo; el vector de gravedad se filtra y el sprite se envía girado (`pushRotateZoomWithAA`) solo cuando el ángulo cambia más de 1°. Si la interfaz gira al revés o queda inclinada, ajusta `IMU_ANGLE_SIGN` / `IMU_ANGLE_OFFSET` en `src/main.cpp`.
 - Todo se compone en un sprite en PSRAM y se envía de una vez a la pantalla; el título se redibuja a ~30 fps solo cuando se desplaza y el anillo unas 4 veces por segundo.
 
 ## Pines
 
-Los pines están en `include/pins.h`; es el único archivo que hay que cambiar para otra placa ESP32-S3 + GC9A01/CST816S. Son las conexiones internas entre el ESP32-S3 y la pantalla/touch: SPI SCLK/MOSI/MISO/CS/DC/RST/BL = 10/11/12/9/8/14/2; I²C SDA/SCL y touch RST/IRQ = 6/7/13/5 (dirección I²C del CST816S: `0x15`). No tienes que conectarlos manualmente. El USB-C integrado usa el conversor USB-serie de la placa para cargar el firmware.
+Los pines están en `include/pins.h`; es el único archivo que hay que cambiar para otra placa ESP32-S3 + GC9A01/CST816S. Son las conexiones internas entre el ESP32-S3 y la pantalla/touch: SPI SCLK/MOSI/MISO/CS/DC/RST/BL = 10/11/12/9/8/14/2; I²C SDA/SCL y touch RST/IRQ = 6/7/13/5 (direcciones I²C: CST816S `0x15`, acelerómetro QMI8658 `0x6B` en el mismo bus). No tienes que conectarlos manualmente. El USB-C integrado usa el conversor USB-serie de la placa para cargar el firmware.
 
 ## Limitaciones conocidas
 
