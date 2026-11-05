@@ -11,7 +11,9 @@
 
 // Round panel, Apple Music style: the cover fills the screen, a dark gradient at the bottom carries
 // the title (scrolling when it doesn't fit) and artist, three glass buttons sit below, and a progress
-// ring runs along the edge. Everything is composed in a PSRAM sprite and pushed rotated by angle.
+// ring runs along the edge. A smaller glass button at the top switches to the lyrics view: the cover
+// darkened, the line being sung in the middle and the previous and next lines dimmed around it.
+// Everything is composed in a PSRAM sprite and pushed rotated by angle.
 class Renderer {
  public:
   Renderer() : canvas_(&lcd_) {}
@@ -22,10 +24,11 @@ class Renderer {
 
   void drawStatus(const PlayerState &state);
   // Re-lays out the text and rebuilds the layer under the ring and title. Call when the track, play
-  // state, notice, cover or pressed button change.
-  void setTrack(const PlayerState &state, int pressedButton);
+  // state, notice, cover, lyrics, pressed button, view or lyric line (index, -1 before the first)
+  // change.
+  void setTrack(const PlayerState &state, int pressedButton, bool lyricsView, int lyricLine);
   void drawFrame(float progress, unsigned long marqueeElapsedMs);
-  bool titleScrolls() const { return titleWidth_ > layout::TITLE_W; }
+  bool titleScrolls() const { return !lyricsView_ && titleWidth_ > layout::TITLE_W; }
 
  private:
   struct RingPixel {
@@ -46,8 +49,13 @@ class Renderer {
   String fitText(const String &text, int maxWidth);
   void drawVignette();
   void drawScrim();
+  void drawShade();
   void drawGlassButtons();
   void drawIcon(int button, bool playing);
+  void drawLyricsButton();
+  void drawLyrics(const PlayerState &state, int line);
+  int drawLyric(const char *text, const lgfx::IFont *font, int rowHeight, int maxRows, int y, int anchor,
+                uint16_t color);
   void drawRing(float progress);
   void drawTitle(int offset);
   void present();
@@ -58,6 +66,7 @@ class Renderer {
   uint16_t *under_ = nullptr;  // everything except the ring and the title
   float angle_ = 0;            // degrees clockwise the UI is rotated on the panel
   int pressedButton_ = -1;
+  bool lyricsView_ = false;
   String title_;
   int titleWidth_ = 0;
   uint8_t scrimAlpha_[layout::SCREEN];

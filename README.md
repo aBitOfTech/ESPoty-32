@@ -10,6 +10,7 @@ Spotify player for the round 240x240 GC9A01 display: it shows the album cover fu
 - Large title (scrolling horizontally when it doesn't fit) with the artist below.
 - Progress ring around the edge that advances in real time between polls.
 - "Glass" style buttons for previous, play/pause and next.
+- Line-synced lyrics view, toggled by a button at the top: the active line large in the middle over the darkened cover, with the previous and next lines dimmed. Lyrics come from [LRCLIB](https://lrclib.net).
 - The interface rotates to any angle following the board's position (QMI8658 accelerometer), so it always stays upright.
 - Status screens: `Conectando WiFi` (connecting to Wi-Fi), `Falta Spotify` (missing credentials or invalid token) and `Nada reproduciéndose` (nothing playing).
 
@@ -49,7 +50,9 @@ If the buttons show `Sin permiso: renueva el token` (no permission: renew the to
 ## Usage
 
 - The bottom strip has three touch zones: previous, play/pause and next. The zones are wider than the drawn buttons.
-- Tapping anywhere above the buttons also toggles play/pause.
+- The small button at the top (three lines) opens the lyrics view and, tapped again, returns to the normal view. Its touch zone is a circle a little wider than the button.
+- Tapping anywhere else above the buttons also toggles play/pause, in both views.
+- In the lyrics view, `Buscando letra...` (searching) shows for up to one poll (3 s) plus the lookup; then the lyrics, `Sin letra sincronizada` (no synced lyrics), `Instrumental` or `No se pudo cargar la letra` (lookup failed). While paused, the line stays put. If the lines run early or late on your setup, adjust `LYRICS_OFFSET_MS` in `src/app_config.h` (positive shows them earlier).
 - Turn the board and the interface turns with it to stay upright; the touch zones follow the rotation. Lying flat (within ~30° of horizontal), it keeps the last orientation.
 - Play/pause is reflected on screen immediately; if Spotify rejects the command, the state is reverted and the error is shown in orange in place of the artist.
 
@@ -59,22 +62,24 @@ If the buttons show `Sin permiso: renueva el token` (no permission: renew the to
 - Networking (Wi-Fi, HTTPS and JPEG decoding) runs in a task on core 0; touch and drawing run in `loop()` on core 1, so the UI never freezes during requests.
 - TLS connections to the API and to the cover CDN are kept alive to avoid a ~1 s handshake per request.
 - Of the images Spotify offers, the smallest one that still covers 240 px is downloaded, and it is decoded into a double buffer in PSRAM.
+- Lyrics are only looked up while the lyrics view is open, once per track: `GET https://lrclib.net/api/get` with artist, title, album and duration, retried once without the album if LRCLIB answers 404. The request uses its own TLS connection, so the Spotify token never reaches LRCLIB, and HTTP/1.0 so the body arrives unchunked. Only `syncedLyrics` and `instrumental` are kept from the JSON; the LRC is parsed into a double buffer in PSRAM. While a lookup runs (usually 1–2 s; connecting, the TLS handshake and the download each time out after 5 s), the network task is busy, so button presses reach Spotify once it finishes.
 - The accelerometer is read about 30 times per second; the gravity vector is filtered and the sprite is pushed rotated (`pushRotateZoomWithAA`) only when the angle changes by more than 1°. If the UI turns the wrong way or settles tilted, adjust `IMU_ANGLE_SIGN` / `IMU_ANGLE_OFFSET` in `src/app_config.h`.
-- Everything is composed in a PSRAM sprite and pushed to the display in one go; the title is redrawn at ~30 fps only while it scrolls, and the ring about 4 times per second.
+- Everything is composed in a PSRAM sprite and pushed to the display in one go; the title is redrawn at ~30 fps only while it scrolls, and the ring about 4 times per second. In the lyrics view the text layer is rebuilt only when the active line changes.
 
 ## Project structure
 
 | Path | Contents |
 |---|---|
 | `src/main.cpp` | `setup()` and the render loop (core 1): touch, rotation and redraw scheduling |
-| `src/network_task.*` | Network task (core 0): Wi-Fi, polling, commands and cover swaps |
+| `src/network_task.*` | Network task (core 0): Wi-Fi, polling, commands, cover and lyrics swaps |
 | `src/spotify_client.*` | Spotify Web API: token refresh, player state, playback commands |
 | `src/cover_loader.*` | Cover download, JPEG decoding and center-crop to 240x240 |
-| `src/renderer.*`, `src/display.h` | Drawing: cover, gradient, title, glass buttons, progress ring, rotation |
+| `src/lyrics_client.*` | Synced lyrics lookup on LRCLIB |
+| `src/renderer.*`, `src/display.h` | Drawing: cover, gradient, title, glass buttons, lyrics view, progress ring, rotation |
 | `src/player_store.*` | State shared between both cores (only accessible under its lock) and the command queue |
 | `src/touch.*`, `src/orientation.*`, `src/i2c_bus.*` | CST816S touch, QMI8658 accelerometer and their shared I²C bus |
 | `src/app_config.h`, `src/theme.h` | Timings, limits and calibration; colors and on-screen texts |
-| `lib/core/` | Hardware-independent logic (color math, blur, text folding, layout, playback), covered by the tests |
+| `lib/core/` | Hardware-independent logic (color math, blur, text folding, layout, playback, LRC parsing and wrapping, URL encoding), covered by the tests |
 | `test/test_core/` | Unit tests for `lib/core` |
 
 ### Tests
@@ -96,4 +101,7 @@ The pins live in `include/pins.h`, the only file to change for another ESP32-S3 
 - The bundled fonts are ASCII-only: Latin accents are shown without diacritics (`é` → `e`), and emoji and other symbols are skipped.
 - HTTPS uses `setInsecure()` to avoid storing a CA bundle in flash; for a device exposed to untrusted networks, certificate validation should be added.
 - The cover is limited to 300 KB to avoid exhausting PSRAM; if the download or decoding fails, a dark background is shown.
-- Only the first artist of each track is shown.- On-screen messages are in Spanish.
+- Only the first artist of each track is shown.
+- On-screen messages are in Spanish.
+- Lyrics come from LRCLIB, a third-party service: while the lyrics view is open, it receives the title, artist, album and duration of each track played. Not every track has synced lyrics, and plain (unsynced) lyrics are not shown. Lines in non-Latin scripts show as `...`. The LRCLIB connection also uses `setInsecure()`.
+- Lyrics are cut at 300 lines, 16 KB of text and a 96 KB response.

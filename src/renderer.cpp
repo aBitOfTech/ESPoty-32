@@ -3,6 +3,7 @@
 #include <math.h>
 
 #include "image_ops.h"
+#include "lyrics.h"
 #include "pins.h"
 #include "psram.h"
 #include "rgb565.h"
@@ -32,6 +33,33 @@ constexpr int RING_DONE_ALPHA = 235;  // of 255
 constexpr int RING_TODO_ALPHA = 120;
 constexpr float KNOB_RADIUS = 4.5f;
 constexpr size_t FRAME_PIXELS = SCREEN * SCREEN;
+
+// Lyrics view: text between the lyrics button and the playback row, inside a circle clear of the ring.
+constexpr float LYRICS_RADIUS = 106.0f;
+constexpr int LYRICS_TOP = 54;
+constexpr int LYRICS_BOTTOM = 160;
+constexpr int LYRICS_CENTER_Y = (LYRICS_TOP + LYRICS_BOTTOM) / 2;
+constexpr int LYRICS_GAP = 6;        // between the active line and its neighbors
+constexpr int ACTIVE_ROW_H = 21;     // DejaVu18
+constexpr int ACTIVE_ROWS = 3;
+constexpr int NEAR_ROW_H = 15;       // DejaVu12
+constexpr int NEAR_ROWS = 2;
+constexpr int LYRICS_MAX_ROWS = 3;   // the most rows any lyric block wraps into
+constexpr int LYRICS_NOTICE_Y = 168;
+
+// Shading of a glass button at pixel (x, y): coverage of the disc (0..1, 0 outside) and how far to
+// lift the background toward white, with a specular rim bright on top and faint below.
+bool glassAt(const GlassButton &button, int x, int y, float base, float &coverage, float &light) {
+  const float dx = x + 0.5f - button.x;
+  const float dy = y + 0.5f - button.y;
+  const float d = sqrtf(dx * dx + dy * dy);
+  coverage = constrain(button.r + 0.5f - d, 0.0f, 1.0f);
+  if (coverage <= 0) return false;
+  const float top = constrain(0.5f - dy / (2 * button.r), 0.0f, 1.0f);  // 1 at the top edge, 0 at the bottom
+  const float rim = constrain(1.0f - fabsf(d - (button.r - 0.8f)), 0.0f, 1.0f) * (0.2f + 0.55f * top);
+  light = constrain(base + 0.1f * top + rim, 0.0f, 1.0f);
+  return true;
+}
 }  // namespace
 
 bool Renderer::begin() {
@@ -142,14 +170,8 @@ void Renderer::drawGlassButtons() {
     const float base = (i == BUTTON_PLAY_PAUSE ? 0.24f : 0.16f) + (i == pressedButton_ ? 0.3f : 0.0f);
     for (int y = button.y - button.r - 1; y <= button.y + button.r + 1; ++y) {
       for (int x = button.x - button.r - 1; x <= button.x + button.r + 1; ++x) {
-        const float dx = x + 0.5f - button.x;
-        const float dy = y + 0.5f - button.y;
-        const float d = sqrtf(dx * dx + dy * dy);
-        const float coverage = constrain(button.r + 0.5f - d, 0.0f, 1.0f);
-        if (coverage <= 0) continue;
-        const float top = constrain(0.5f - dy / (2 * button.r), 0.0f, 1.0f);  // 1 at the top edge, 0 at the bottom
-        const float rim = constrain(1.0f - fabsf(d - (button.r - 0.8f)), 0.0f, 1.0f) * (0.2f + 0.55f * top);
-        const float light = constrain(base + 0.1f * top + rim, 0.0f, 1.0f);
+        float coverage, light;
+        if (!glassAt(button, x, y, base, coverage, light)) continue;
         const int s = ((y - BLUR_Y) >> 1) * BLUR_W + ((x - BLUR_X) >> 1);
         const int r = blurPlanes_[0][s] + (255 - blurPlanes_[0][s]) * light;
         const int g = blurPlanes_[1][s] + (255 - blurPlanes_[1][s]) * light;
@@ -158,6 +180,32 @@ void Renderer::drawGlassButtons() {
       }
     }
   }
+}
+
+// Darkens the whole background so the lyrics stay readable over any cover.
+void Renderer::drawShade() {
+  for (size_t i = 0; i < FRAME_PIXELS; ++i) {
+    frame_[i] = __builtin_bswap16(mix(__builtin_bswap16(frame_[i]), theme::SCRIM, theme::LYRICS_SHADE));
+  }
+}
+
+// Same glass as the playback row but without the blur, which only covers that row. It stays lit
+// while the lyrics view is open. The icon is three lines of text.
+void Renderer::drawLyricsButton() {
+  const GlassButton &button = LYRICS_BUTTON;
+  const float base = (lyricsView_ ? 0.34f : 0.16f) + (pressedButton_ == BUTTON_LYRICS ? 0.3f : 0.0f);
+  for (int y = button.y - button.r - 1; y <= button.y + button.r + 1; ++y) {
+    for (int x = button.x - button.r - 1; x <= button.x + button.r + 1; ++x) {
+      float coverage, light;
+      if (!glassAt(button, x, y, base, coverage, light)) continue;
+      int r, g, b;
+      rgb565::unpack(__builtin_bswap16(frame_[y * SCREEN + x]), r, g, b);
+      blendPx(y * SCREEN + x, pack(r + (255 - r) * light, g + (255 - g) * light, b + (255 - b) * light),
+              static_cast<int>(coverage * 256));
+    }
+  }
+  static const int widths[3] = {16, 16, 10};
+  for (int i = 0; i < 3; ++i) canvas_.fillRoundRect(button.x - 8, button.y - 6 + 5 * i, widths[i], 2, 1, theme::ICON);
 }
 
 void Renderer::drawIcon(int button, bool playing) {
@@ -225,6 +273,66 @@ void Renderer::drawTitle(int offset) {
   }
 }
 
+// Draws text word-wrapped into up to maxRows rows of rowHeight px, each as wide as the round screen
+// allows at its height. anchor -1: the block ends at y; 0: it is centered on y; 1: it starts at y.
+// Text that doesn't fit ends in "...". Returns the block height.
+int Renderer::drawLyric(const char *text, const lgfx::IFont *font, int rowHeight, int maxRows, int y, int anchor,
+                        uint16_t color) {
+  maxRows = min(maxRows, LYRICS_MAX_ROWS);
+  if (maxRows <= 0) return 0;
+  canvas_.setFont(font);
+  auto topOf = [&](int row, int rows) {
+    const int top = anchor < 0 ? y - rows * rowHeight : anchor == 0 ? y - rows * rowHeight / 2 : y;
+    return top + row * rowHeight;
+  };
+  auto widthOf = [&](int row, int rows) {
+    const int top = topOf(row, rows);
+    return bandWidth(LYRICS_RADIUS, top, top + rowHeight);
+  };
+  auto measure = [&](const char *s, int length) { return static_cast<int>(canvas_.textWidth(String(s, length))); };
+  lyrics::Span rows[LYRICS_MAX_ROWS];
+  const int count = lyrics::wrapText(text, maxRows, widthOf, measure, rows);
+  canvas_.setTextDatum(middle_center);
+  canvas_.setTextColor(color);
+  for (int i = 0; i < count; ++i) {
+    if (rows[i].end <= rows[i].start) continue;
+    const String row(text + rows[i].start, rows[i].end - rows[i].start);
+    canvas_.drawString(fitText(row, widthOf(i, count)), CENTER, topOf(i, count) + rowHeight / 2);
+  }
+  return count * rowHeight;
+}
+
+// The active line large in the middle, the previous and next lines with text dimmed above and below.
+// Gaps and the time before the first line show "..." with the next line below. Without lyrics, the
+// lookup status.
+void Renderer::drawLyrics(const PlayerState &state, int line) {
+  const LyricsData *lyrics = state.lyricsStatus == LYRICS_READY ? state.lyrics : nullptr;
+  if (!lyrics) {
+    const char *message = state.lyricsStatus == LYRICS_INSTRUMENTAL ? texts::LYRICS_INSTRUMENTAL
+                          : state.lyricsStatus == LYRICS_NOT_FOUND  ? texts::LYRICS_NOT_FOUND
+                          : state.lyricsStatus == LYRICS_FAILED     ? texts::LYRICS_FAILED
+                                                                    : texts::LYRICS_SEARCHING;
+    drawLyric(message, &fonts::DejaVu18, ACTIVE_ROW_H, 2, LYRICS_CENTER_Y, 0, theme::TEXT_DIM);
+    return;
+  }
+  if (line >= lyrics->count) line = lyrics->count - 1;
+  const bool pause = line < 0 || lyrics->isPause(line);
+  const int height = drawLyric(pause ? texts::LYRICS_PAUSE : lyrics->textOf(line), &fonts::DejaVu18, ACTIVE_ROW_H,
+                               ACTIVE_ROWS, LYRICS_CENTER_Y, 0, pause ? theme::TEXT_DIM : theme::TEXT);
+  const int above = LYRICS_CENTER_Y - height / 2 - LYRICS_GAP;
+  const int below = LYRICS_CENTER_Y - height / 2 + height + LYRICS_GAP;
+  const int previous = lyrics->neighbor(line, -1);
+  const int next = lyrics->neighbor(line, 1);
+  if (previous >= 0) {
+    drawLyric(lyrics->textOf(previous), &fonts::DejaVu12, NEAR_ROW_H, min(NEAR_ROWS, (above - LYRICS_TOP) / NEAR_ROW_H),
+              above, -1, theme::LYRICS_NEAR);
+  }
+  if (next >= 0) {
+    drawLyric(lyrics->textOf(next), &fonts::DejaVu12, NEAR_ROW_H, min(NEAR_ROWS, (LYRICS_BOTTOM - below) / NEAR_ROW_H),
+              below, 1, theme::LYRICS_NEAR);
+  }
+}
+
 // Pushes the canvas rotated around the center. The rotated square always covers the round panel.
 void Renderer::present() {
   if (angle_ == 0) canvas_.pushSprite(0, 0);
@@ -247,28 +355,36 @@ void Renderer::drawStatus(const PlayerState &state) {
   present();
 }
 
-void Renderer::setTrack(const PlayerState &state, int pressedButton) {
+void Renderer::setTrack(const PlayerState &state, int pressedButton, bool lyricsView, int lyricLine) {
   pressedButton_ = pressedButton;
+  lyricsView_ = lyricsView;
   canvas_.setFont(&fonts::DejaVu18);
   title_ = asciiFold(state.name);
   titleWidth_ = canvas_.textWidth(title_);
 
   if (state.art) memcpy(frame_, state.art, FRAME_PIXELS * sizeof(uint16_t));
   else drawVignette();
-  drawScrim();
+  if (lyricsView) drawShade();
+  else drawScrim();
   drawGlassButtons();
   for (int button = 0; button < 3; ++button) drawIcon(button, state.playback.playing);
+  drawLyricsButton();
   const bool hasNotice = state.notice.length() > 0;
   canvas_.setTextDatum(middle_center);
   canvas_.setFont(&fonts::DejaVu12);
   canvas_.setTextColor(hasNotice ? theme::NOTICE : theme::TEXT_DIM);
-  canvas_.drawString(fitText(asciiFold(hasNotice ? state.notice : state.artist), ARTIST_W), CENTER, ARTIST_Y);
+  if (!lyricsView) {
+    canvas_.drawString(fitText(asciiFold(hasNotice ? state.notice : state.artist), ARTIST_W), CENTER, ARTIST_Y);
+  } else {
+    if (hasNotice) canvas_.drawString(fitText(asciiFold(state.notice), ARTIST_W), CENTER, LYRICS_NOTICE_Y);
+    drawLyrics(state, lyricLine);
+  }
   memcpy(under_, frame_, FRAME_PIXELS * sizeof(uint16_t));
 }
 
 void Renderer::drawFrame(float progress, unsigned long marqueeElapsedMs) {
   memcpy(frame_, under_, FRAME_PIXELS * sizeof(uint16_t));
   drawRing(progress);
-  drawTitle(marqueeOffset(titleWidth_, marqueeElapsedMs));
+  if (!lyricsView_) drawTitle(marqueeOffset(titleWidth_, marqueeElapsedMs));
   present();
 }

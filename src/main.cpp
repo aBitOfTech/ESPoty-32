@@ -1,7 +1,7 @@
 // Spotify player for the Waveshare ESP32-S3-Touch-LCD-1.28.
 //
-// Core 1 (this file): touch, accelerometer and drawing. Core 0 (network_task): Wi-Fi, Spotify and
-// covers. They share state through PlayerStore.
+// Core 1 (this file): touch, accelerometer and drawing. Core 0 (network_task): Wi-Fi, Spotify, covers
+// and lyrics. They share state through PlayerStore.
 
 #include <Arduino.h>
 
@@ -28,6 +28,13 @@ uint32_t seenVersion = UINT32_MAX;
 unsigned long titleShownAt = 0;
 int pressedButton = -1;
 unsigned long pressedUntil = 0;
+bool lyricsView = false;  // toggled by the lyrics button
+
+// Index of the lyric line being sung at `now`; -1 before the first line or without lyrics.
+int lyricLineAt(unsigned long now) {
+  if (view.lyricsStatus != LYRICS_READY || !view.lyrics) return -1;
+  return view.lyrics->lineAt(static_cast<long>(view.playback.positionAt(now)) + LYRICS_OFFSET_MS);
+}
 
 void handleTap(int x, int y) {
   if (!view.trackId.length()) return;
@@ -35,6 +42,13 @@ void handleTap(int x, int y) {
   const layout::Button button = buttonAt(x, y);
   pressedButton = button;
   pressedUntil = millis() + PRESS_FLASH_MS;
+  if (button == layout::BUTTON_LYRICS) {
+    // Not a playback command (below, anything but prev/play-pause would become CMD_NEXT). The
+    // network task looks the lyrics up on its next poll.
+    lyricsView = !lyricsView;
+    store.with([](PlayerState &s) { s.lyricsWanted = lyricsView; });
+    return;
+  }
   Command command = button == layout::BUTTON_PREV ? CMD_PREV : CMD_NEXT;
   if (button == layout::BUTTON_PLAY_PAUSE) {
     // Optimistic: flip play/pause (and freeze/resume the progress) before the network round trip.
@@ -86,6 +100,8 @@ void loop() {
   static unsigned long lastFrame = 0;
   static bool lastPressed = false;
   static bool lastPlaying = false;
+  static bool lastLyricsView = false;
+  static int lastLine = -1;
   const unsigned long now = millis();
   const bool turned = orientation.update(now);
   if (turned) renderer.setAngle(orientation.angle());
@@ -97,13 +113,21 @@ void loop() {
     return;
   }
 
+  // Checked every pass, not only on redraw frames, so a new lyric line shows without waiting.
+  const int line = lyricsView ? lyricLineAt(now) : -1;
   if (pressedButton >= 0 && static_cast<long>(now - pressedUntil) >= 0) pressedButton = -1;
-  if ((pressedButton >= 0) != lastPressed || view.playback.playing != lastPlaying) changed = true;
+  if ((pressedButton >= 0) != lastPressed || view.playback.playing != lastPlaying || lyricsView != lastLyricsView ||
+      line != lastLine) {
+    changed = true;
+  }
   lastPressed = pressedButton >= 0;
   lastPlaying = view.playback.playing;
-  if (changed) renderer.setTrack(view, pressedButton);
+  lastLyricsView = lyricsView;
+  lastLine = line;
+  if (changed) renderer.setTrack(view, pressedButton, lyricsView, line);
 
-  // Redraw for a rotation or a scrolling title (every frame) or the progress ring (a few times per second).
+  // Redraw for a rotation, a new layout or a scrolling title (every frame; never in the lyrics view)
+  // or the progress ring (a few times per second).
   const unsigned long interval = renderer.titleScrolls() ? FRAME_MS : view.playback.playing ? PROGRESS_REDRAW_MS : ULONG_MAX;
   if (!changed && !turned && now - lastFrame < interval) {
     delay(5);

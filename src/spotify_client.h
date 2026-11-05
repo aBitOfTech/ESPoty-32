@@ -11,6 +11,7 @@ struct PlayerSnapshot {
   String trackId;
   String name;
   String artist;
+  String album;
   String imageUrl;  // smallest cover that still fills the panel
   bool playing = false;
   uint32_t progressMs = 0;

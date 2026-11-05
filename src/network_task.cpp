@@ -6,6 +6,7 @@
 #include "cover_loader.h"
 #include "credentials.h"
 #include "layout.h"
+#include "lyrics_client.h"
 #include "psram.h"
 #include "spotify_client.h"
 #include "theme.h"
@@ -18,11 +19,13 @@ class NetworkWorker {
 
   void allocate() {
     for (uint16_t *&buffer : artBuffers_) buffer = psramAlloc<uint16_t>(layout::SCREEN * layout::SCREEN);
+    for (LyricsData *&buffer : lyricsBuffers_) buffer = psramAlloc<LyricsData>(1);
   }
 
   void run() {
     spotify_.begin();
     covers_.begin();
+    lyrics_.begin();
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     while (WiFi.status() != WL_CONNECTED) vTaskDelay(pdMS_TO_TICKS(250));
     unsigned long nextPoll = 0;
@@ -53,6 +56,7 @@ class NetworkWorker {
     }
     applySnapshot(snapshot);
     updateCover(snapshot);
+    updateLyrics(snapshot);
   }
 
   void applySnapshot(const PlayerSnapshot &snapshot) {
@@ -62,6 +66,9 @@ class NetworkWorker {
         s.name = snapshot.name;
         s.artist = snapshot.artist;
         s.notice = "";
+        // The new track's lyrics arrive later, if at all: never show the previous ones meanwhile.
+        s.lyrics = nullptr;
+        s.lyricsStatus = LYRICS_PENDING;
         s.version++;
       }
       const unsigned long now = millis();
@@ -85,16 +92,38 @@ class NetworkWorker {
     });
   }
 
+  // Looks the lyrics up once per track, and only while the lyrics view is open, so tracks aren't sent
+  // to a third party otherwise. A miss or a failure isn't retried until the track changes.
+  void updateLyrics(const PlayerSnapshot &snapshot) {
+    if (snapshot.trackId == lyricsTrack_) return;
+    if (!store_.with([](PlayerState &s) { return s.lyricsWanted; })) return;
+    lyricsTrack_ = snapshot.trackId;
+    // Parse into the buffer not filled last. The shared pointer may already be cleared while the
+    // render loop still draws from its copy of it, so comparing with the pointer wouldn't be enough.
+    const int index = lastLyricsBuffer_ ^ 1;
+    LyricsData *target = lyricsBuffers_[index];
+    const LyricsStatus status = lyrics_.fetch(snapshot, target);
+    if (status == LYRICS_READY) lastLyricsBuffer_ = index;
+    store_.with([&](PlayerState &s) {
+      s.lyrics = status == LYRICS_READY ? target : nullptr;
+      s.lyricsStatus = status;
+      s.version++;
+    });
+  }
+
   void showStatus(const char *title, const char *detail = "") {
     store_.with([&](PlayerState &s) {
       if (s.trackId.length() || s.statusTitle != title || s.statusDetail != detail) {
         s.trackId = "";
         s.statusTitle = title;
         s.statusDetail = detail;
+        s.lyrics = nullptr;
+        s.lyricsStatus = LYRICS_PENDING;
         s.version++;
       }
     });
     coverTrack_ = "";
+    lyricsTrack_ = "";
   }
 
   void runCommand(Command command) {
@@ -132,8 +161,12 @@ class NetworkWorker {
   PlayerStore &store_;
   SpotifyClient spotify_;
   CoverLoader covers_;
-  String coverTrack_;  // track whose cover is in (or failed to load into) the shown buffer
+  LyricsClient lyrics_;
+  String coverTrack_;   // track whose cover is in (or failed to load into) the shown buffer
+  String lyricsTrack_;  // track whose lyrics were looked up, found or not
   uint16_t *artBuffers_[2] = {nullptr, nullptr};
+  LyricsData *lyricsBuffers_[2] = {nullptr, nullptr};
+  int lastLyricsBuffer_ = 1;  // index of the buffer filled last; the next lookup writes the other
 };
 
 void taskEntry(void *worker) { static_cast<NetworkWorker *>(worker)->run(); }

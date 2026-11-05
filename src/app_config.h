@@ -17,6 +17,15 @@ constexpr size_t COVER_MAX_BYTES = 300000;  // keeps the JPEG within PSRAM
 constexpr unsigned long COVER_HTTP_TIMEOUT_MS = 10000;
 constexpr unsigned long COVER_DOWNLOAD_MS = 15000;
 
+// Synced lyrics from LRCLIB. The response also carries plainLyrics and a YAML copy of everything:
+// ~4x the synced text (41 KB for a 148-line song). A lookup blocks the network task, and with it the
+// buttons, while it runs: usually 1-2 s, at worst LYRICS_TIMEOUT_MS per step of up to two requests.
+constexpr size_t LYRICS_MAX_BYTES = 96 * 1024;     // response body, in PSRAM
+constexpr int LYRICS_MAX_LINES = 300;              // LRC lines kept per song
+constexpr int LYRICS_MAX_TEXT = 16 * 1024;         // their folded text, in PSRAM (x2 buffers)
+constexpr unsigned long LYRICS_TIMEOUT_MS = 5000;  // connect, TLS handshake and download, each
+constexpr long LYRICS_OFFSET_MS = 0;               // added to the playback position; > 0 shows lines earlier
+
 constexpr int NETWORK_TASK_STACK = 16384;
 
 // Gravity-based rotation: the UI turns to stay upright while the board is held up, and keeps its

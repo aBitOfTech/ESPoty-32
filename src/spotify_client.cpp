@@ -19,6 +19,7 @@ PollResult parsePlayer(const String &body, PlayerSnapshot &out) {
   filter["item"]["name"] = true;
   filter["item"]["duration_ms"] = true;
   filter["item"]["artists"][0]["name"] = true;
+  filter["item"]["album"]["name"] = true;
   filter["item"]["album"]["images"][0]["url"] = true;
   filter["item"]["album"]["images"][0]["width"] = true;
   JsonDocument json;
@@ -31,6 +32,7 @@ PollResult parsePlayer(const String &body, PlayerSnapshot &out) {
   out.trackId = item["id"].as<String>();
   out.name = item["name"].as<String>();
   out.artist = item["artists"][0]["name"].as<String>();
+  out.album = item["album"]["name"] | "";
   out.durationMs = item["duration_ms"] | 0;
   out.progressMs = json["progress_ms"] | 0;
   out.playing = json["is_playing"] | false;
